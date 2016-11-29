@@ -7,11 +7,9 @@ EET (Czech Registration of Sales) in Swift
 
 Příklad použití:
 
-```
+```swift
 let zeroPayment = XUEETCommunicator.PaymentCommand.PaymentAmount.VATPayment(vatExclusive: NSDecimalNumber.zero, vat: NSDecimalNumber.zero)
-let amount = XUEETCommunicator.PaymentCommand.PaymentAmount(total: NSDecimalNumber.zero, 
-																																baseRateVATPayment: zeroPayment,
-                                                                loweredRateVATPayment: zeroPayment)
+let amount = XUEETCommunicator.PaymentCommand.PaymentAmount(total: NSDecimalNumber.zero, baseRateVATPayment: zeroPayment, loweredRateVATPayment: zeroPayment)
 let paymentCommand = XUEETCommunicator.PaymentCommand(documentNumber: "00001", paymentAmount: amount, transactionDate: Date())
 
 let communicator = try XUEETCommunicator(account: self.account)
