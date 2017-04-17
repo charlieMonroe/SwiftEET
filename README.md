@@ -12,7 +12,12 @@ let zeroPayment = XUEETCommunicator.PaymentCommand.PaymentAmount.VATPayment(vatE
 let amount = XUEETCommunicator.PaymentCommand.PaymentAmount(total: NSDecimalNumber.zero, baseRateVATPayment: zeroPayment, loweredRateVATPayment: zeroPayment)
 let paymentCommand = XUEETCommunicator.PaymentCommand(documentNumber: "00001", paymentAmount: amount, transactionDate: Date())
 
-let communicator = try XUEETCommunicator(account: self.account)
+let vatRegistrationNumber = "CZ0101010101"
+let localeSpecificData = XUCzechLocaleSpecificPreferencesData()
+
+// ... fill localeSpecificData.
+
+let communicator = try XUEETCommunicator(localeSpecificData: localeSpecificData, vatRegistrationID: vatRegistrationNumber)
 let response = try communicator.sendPayment(paymentCommand, validatingOnly: true)
 ```
 
