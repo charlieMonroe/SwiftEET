@@ -7,7 +7,12 @@
 //
 
 import Foundation
-import XUCore
+import Security
+
+#if os(iOS)
+	import KissXML
+	import SwiftyRSA
+#endif
 
 private func _loadCertificateChainAndPrivateKey(from rawData: Data, andPassword password: String) throws -> ([SecCertificate], SecKey) {
 	let options: NSDictionary = [kSecImportExportPassphrase: password ]
@@ -31,6 +36,7 @@ private func _loadCertificateChainAndPrivateKey(from rawData: Data, andPassword 
 	var privateKeyOptional: SecKey?
 	let identity = identityOpt as! SecIdentity
 	let privateKeyStatus = SecIdentityCopyPrivateKey(identity, &privateKeyOptional)
+	
 	guard let privateKey = privateKeyOptional, privateKeyStatus == noErr else {
 		throw XUCzechLocaleSpecificPreferencesData.EET.Certificate.Error.errorCode(privateKeyStatus)
 	}
@@ -79,7 +85,7 @@ public final class XUCzechLocaleSpecificPreferencesData: NSObject, NSCoding {
 			aCoder.encode(self.zipCode, forKey: Keys.ZIPCode)
 		}
 		
-		public override  init() {
+		public override init() {
 			super.init()
 		}
 		
@@ -160,61 +166,73 @@ public final class XUCzechLocaleSpecificPreferencesData: NSObject, NSCoding {
 			}
 			
 			/// Signes data by hashing it using SHA256 and then encrypting result
-			/// with RSA. Throws XUEETCommunicator.SendingError
+			/// with RSA. Throws XUEETCommunicator.SendingError on macOS, on iOS
+			/// throws whatever SwiftyRSA throws.
 			public func signDataUsingRSASHA256(_ data: Data) throws -> String {
-				var error: Unmanaged<CFError>?
-				guard let signer = SecSignTransformCreate(self.privateKey, &error) else {
-					if let err = error?.takeRetainedValue() {
-						throw XUEETCommunicator.SendingError.coreFoundationError(err)
-					} else {
-						throw XUEETCommunicator.SendingError.unknownError
+				#if os(iOS)
+					let swiftyRsa = SwiftyRSA()
+					let sign = try swiftyRsa.signData(data, privateKey: privateKey, digestMethod: .SHA256)
+					return sign.base64EncodedString()
+				#else
+					var error: Unmanaged<CFError>?
+					guard let signer = SecSignTransformCreate(self.privateKey, &error) else {
+						if let err = error?.takeRetainedValue() {
+							throw XUEETCommunicator.SendingError.coreFoundationError(err)
+						} else {
+							throw XUEETCommunicator.SendingError.unknownError
+						}
 					}
-				}
-				
-				guard SecTransformSetAttribute(signer, kSecTransformInputAttributeName, data as CFData, &error) else {
-					if let err = error?.takeRetainedValue() {
-						throw XUEETCommunicator.SendingError.coreFoundationError(err)
-					} else {
-						throw XUEETCommunicator.SendingError.unknownError
+					
+					guard SecTransformSetAttribute(signer, kSecTransformInputAttributeName, data as CFData, &error) else {
+						if let err = error?.takeRetainedValue() {
+							throw XUEETCommunicator.SendingError.coreFoundationError(err)
+						} else {
+							throw XUEETCommunicator.SendingError.unknownError
+						}
 					}
-				}
-				
-				guard SecTransformSetAttribute(signer, kSecDigestTypeAttribute, kSecDigestSHA2, &error) else {
-					if let err = error?.takeRetainedValue() {
-						throw XUEETCommunicator.SendingError.coreFoundationError(err)
-					} else {
-						throw XUEETCommunicator.SendingError.unknownError
+					
+					guard SecTransformSetAttribute(signer, kSecDigestTypeAttribute, kSecDigestSHA2, &error) else {
+						if let err = error?.takeRetainedValue() {
+							throw XUEETCommunicator.SendingError.coreFoundationError(err)
+						} else {
+							throw XUEETCommunicator.SendingError.unknownError
+						}
 					}
-				}
-				
-				let digestLength: CFNumber = 256 as CFNumber
-				guard SecTransformSetAttribute(signer, kSecDigestLengthAttribute, digestLength, &error) else {
-					if let err = error?.takeRetainedValue() {
-						throw XUEETCommunicator.SendingError.coreFoundationError(err)
-					} else {
-						throw XUEETCommunicator.SendingError.unknownError
+					
+					let digestLength: CFNumber = 256 as CFNumber
+					guard SecTransformSetAttribute(signer, kSecDigestLengthAttribute, digestLength, &error) else {
+						if let err = error?.takeRetainedValue() {
+							throw XUEETCommunicator.SendingError.coreFoundationError(err)
+						} else {
+							throw XUEETCommunicator.SendingError.unknownError
+						}
 					}
-				}
-				
-				error = nil
-				
-				guard let signedData = SecTransformExecute(signer, &error) as? Data else {
-					if let err = error?.takeRetainedValue() {
-						throw XUEETCommunicator.SendingError.coreFoundationError(err)
-					} else {
-						throw XUEETCommunicator.SendingError.unknownError
+					
+					error = nil
+					
+					guard let signedData = SecTransformExecute(signer, &error) as? Data else {
+						if let err = error?.takeRetainedValue() {
+							throw XUEETCommunicator.SendingError.coreFoundationError(err)
+						} else {
+							throw XUEETCommunicator.SendingError.unknownError
+						}
 					}
-				}
-				
-				let signature = signedData.base64EncodedString()
-				return signature
+					
+					let signature = signedData.base64EncodedString()
+					return signature
+				#endif
 			}
-			
 		}
 		
 		/// ID of the cash register. This will return the serial number of the
 		/// device this is run on.
-		public var cashRegisterID: String = XUHardwareInfo.shared.serialNumber
+		public var cashRegisterID: String = {
+			#if os(iOS)
+				return UIDevice.current.identifierForVender!.uuidString
+			#else
+				return XUHardwareInfo.shared.serialNumber
+			#endif
+		}()
 		
 		/// Certificate data.
 		public var certificate: Certificate?

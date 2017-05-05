@@ -5,6 +5,12 @@ EET (Czech Registration of Sales) in Swift
 
 "Knihovna" pro EET napsaná ve Swiftu. Vyžaduje XUCore (https://github.com/charlieMonroe/XUCore/).
 
+-- Potřebné knihovny pro iOS:
+- KissXML
+- AEXML
+- SwiftyRSA
+- SwCrypto
+
 Příklad použití:
 
 ```swift
@@ -18,7 +24,7 @@ let localeSpecificData = XUCzechLocaleSpecificPreferencesData()
 // ... fill localeSpecificData.
 
 let communicator = try XUEETCommunicator(localeSpecificData: localeSpecificData, vatRegistrationID: vatRegistrationNumber)
-let response = try communicator.sendPayment(paymentCommand, validatingOnly: true)
+let response = try communicator.sendPayment(paymentCommand, validatingOnly: true, testMode: false) // možnost zapnutí playground serveru pomocí testMode argumentu
 ```
 
 Pokud máte nějaké dotazy, pište.

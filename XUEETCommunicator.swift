@@ -10,6 +10,16 @@ import Foundation
 import Security
 import XUCore
 
+#if os(iOS)
+	import KissXML
+	import AEXML
+	import SwiftyRSA
+	
+	typealias XUXMLElement = DDXMLElement
+#else
+	typealias XUXMLElement = XMLElement
+#endif
+
 private let _dateFormatter: DateFormatter = {
 	let dateFormatter = DateFormatter()
 	dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssZZZZZ"
@@ -17,7 +27,7 @@ private let _dateFormatter: DateFormatter = {
 }()
 
 
-private extension XMLElement {
+private extension XUXMLElement {
 	
 	var canonicalXMLString: String {
 		var result = "<\(self.name!)"
@@ -43,20 +53,103 @@ private extension XMLElement {
 			result += " "
 			result += attributes.map({ $0.xmlString }).joined(separator: " ")
 		}
+		
 		result += ">"
 		
-		if let children = self.children?.flatMap({ $0 as? XMLElement }), !children.isEmpty {
+		if let children = self.children?.flatMap({ $0 as? XUXMLElement }), !children.isEmpty {
 			result += children.map({ $0.canonicalXMLString }).joined()
 		} else if let stringValue = self.stringValue {
 			result += stringValue
 		}
 		
 		result += "</\(self.name!)>"
+		
 		return result
 	}
 	
+	#if os(iOS)
+	func addAttribute(named name: String, withStringValue stringValue: String) {
+		self.addAttribute(withName: name, stringValue: stringValue)
+	}
+	
+	func setAttributesWith(_ attributes: [String : String]) {
+		for (name, value) in attributes {
+			self.addAttribute(withName: name, stringValue: value)
+		}
+	}
+	
+	convenience init(name: String, attributes: [String: String]) {
+		self.init(name: name)
+		
+		self.setAttributesWith(attributes: attributes)
+	}
+	#endif
+	
 }
 
+
+#if os(iOS)
+	
+	private extension XUDownloadCenter {
+		func downloadXMLDocument(at url: URL!, withRequestModifier modifier: (inout URLRequest) -> Void) -> AEXMLDocument? {
+			guard let source = self.downloadWebPage(at: url, withRequestModifier: modifier) else {
+				return nil
+			}
+			
+			let options = AEXMLOptions()
+			return try? AEXMLDocument(xml: source, encoding: .utf8, options: options)
+		}
+	}
+	
+	private extension AEXMLElement {
+		
+		func firstNode(onXPath xPath: String) -> AEXMLElement? {
+			let pathComponents = xPath.components(separatedBy: "/")
+			
+			var element = self
+			for component in pathComponents {
+				if component.hasPrefix("@") {
+					fatalError("Attributes are not supported as entities in AEXML.")
+				}
+				
+				element = element[component]
+				if element.error != nil {
+					return nil
+				}
+			}
+			
+			return element
+		}
+		
+		func nodes(forXPath xPath: String) -> [AEXMLElement] {
+			guard let element = self.firstNode(onXPath: xPath) else {
+				return []
+			}
+			
+			return element.all
+		}
+		
+		func stringValue(ofFirstNodeOnXPath xPath: String) -> String? {
+			let pathComponents = xPath.components(separatedBy: "/")
+			
+			var element = self
+			for component in pathComponents {
+				if component.hasPrefix("@") {
+					return element.attributes[component.deleting(prefix: "@")]
+				}
+				
+				element = element[component]
+				if element.error != nil {
+					return nil
+				}
+			}
+			
+			return element.stringValue
+		}
+		
+	}
+	
+#endif
 
 public final class XUEETCommunicator {
 	
@@ -101,7 +194,7 @@ public final class XUEETCommunicator {
 		
 		/// Command UUID.
 		public let commandUUID: String = {
-			return String.uuidString
+			return UUID().uuidString
 		}()
 		
 		/// Number of the document. E.g. 000001
@@ -184,6 +277,7 @@ public final class XUEETCommunicator {
 		
 		/// An error with multiple error strings.
 		case error(Error)
+		
 	}
 	
 	public enum InitializationError: Error {
@@ -191,7 +285,7 @@ public final class XUEETCommunicator {
 		/// Error with an error message.
 		case errorString(String)
 		
-		/// Error represented by OSStatus. You should use 
+		/// Error represented by OSStatus. You should use
 		/// SecCopyErrorMessageString(status, nil) to make this into a string.
 		case errorCode(OSStatus)
 	}
@@ -237,19 +331,19 @@ public final class XUEETCommunicator {
 	/// VAT registration ID - "DIČ".
 	public let vatRegistrationID: String
 	
-	private func _createControlCodesElement(withCommand command: PaymentCommand) throws -> XMLElement {
-		let element = XMLElement(name: "KontrolniKody")
+	private func _createControlCodesElement(withCommand command: PaymentCommand) throws -> XUXMLElement {
+		let element = XUXMLElement(name: "KontrolniKody")
 		let children = try self._generatePKPandBKP(forCommand: command)
 		children.forEach({ element.addChild($0) })
 		return element
 	}
 	
-	private func _createDataElement(withCommand command: PaymentCommand) throws -> XMLElement {
+	private func _createDataElement(withCommand command: PaymentCommand) throws -> XUXMLElement {
 		guard let premisesID = self.localeSpecificData.eetData.premisesID else {
 			throw SendingError.localeSpecificDataIncomplete
 		}
 		
-		let element = XMLElement(name: "Data")
+		let element = XUXMLElement(name: "Data")
 		var atts: [String : String] = [
 			"dic_popl": self.vatRegistrationID,
 			"id_provoz": premisesID,
@@ -278,8 +372,8 @@ public final class XUEETCommunicator {
 		return element
 	}
 	
-	private func _createHeaderElement(withUUID uuid: String, validatingOnly: Bool) -> XMLElement {
-		let element = XMLElement(name: "Hlavicka")
+	private func _createHeaderElement(withUUID uuid: String, validatingOnly: Bool) -> XUXMLElement {
+		let element = XUXMLElement(name: "Hlavicka")
 		let date = Date()
 		
 		var atts = [
@@ -296,30 +390,30 @@ public final class XUEETCommunicator {
 		return element
 	}
 	
-	private func _createSignedInfoElement(withDigest digest: String, andBodyUUID bodyUUID: String) -> XMLElement {
-		let signedInfoElement = XMLElement(name: "ds:SignedInfo")
-		let canonicalizationMethodElement = XMLElement(name: "ds:CanonicalizationMethod", attributes: [
+	private func _createSignedInfoElement(withDigest digest: String, andBodyUUID bodyUUID: String) -> XUXMLElement {
+		let signedInfoElement = XUXMLElement(name: "ds:SignedInfo")
+		let canonicalizationMethodElement = XUXMLElement(name: "ds:CanonicalizationMethod", attributes: [
 				"Algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#"
 			])
-		canonicalizationMethodElement.addChild(XMLElement(name: "ec:InclusiveNamespaces", attributes: [
+		canonicalizationMethodElement.addChild(XUXMLElement(name: "ec:InclusiveNamespaces", attributes: [
 				"xmlns:ec": "http://www.w3.org/2001/10/xml-exc-c14n#",
 				"PrefixList": "soap"
 			]))
 		signedInfoElement.addChild(canonicalizationMethodElement)
 		
-		signedInfoElement.addChild(XMLElement(name: "ds:SignatureMethod", attributes: [
+		signedInfoElement.addChild(XUXMLElement(name: "ds:SignatureMethod", attributes: [
 				"Algorithm": "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"
 			]))
-
-		let referenceElement = XMLElement(name: "ds:Reference", attributes: [
+		
+		let referenceElement = XUXMLElement(name: "ds:Reference", attributes: [
 				"URI": "#id-\(bodyUUID)"
 			])
 		
-		let transformsElement = XMLElement(name: "ds:Transforms")
-		let transformElement = XMLElement(name: "ds:Transform", attributes: [
+		let transformsElement = XUXMLElement(name: "ds:Transforms")
+		let transformElement = XUXMLElement(name: "ds:Transform", attributes: [
 				"Algorithm": "http://www.w3.org/2001/10/xml-exc-c14n#"
 			])
-		transformElement.addChild(XMLElement(name: "ec:InclusiveNamespaces", attributes: [
+		transformElement.addChild(XUXMLElement(name: "ec:InclusiveNamespaces", attributes: [
 				"xmlns:ec": "http://www.w3.org/2001/10/xml-exc-c14n#",
 				"PrefixList": ""
 			]))
@@ -327,17 +421,17 @@ public final class XUEETCommunicator {
 		transformsElement.addChild(transformElement)
 		referenceElement.addChild(transformsElement)
 		
-		referenceElement.addChild(XMLElement(name: "ds:DigestMethod", attributes: [
+		referenceElement.addChild(XUXMLElement(name: "ds:DigestMethod", attributes: [
 				"Algorithm": "http://www.w3.org/2001/04/xmlenc#sha256"
 			]))
 		
-		referenceElement.addChild(XMLElement(name: "ds:DigestValue", stringValue: digest))
+		referenceElement.addChild(XUXMLElement(name: "ds:DigestValue", stringValue: digest))
 		
 		signedInfoElement.addChild(referenceElement)
 		return signedInfoElement
 	}
 	
-	private func _generatePKPandBKP(forCommand command: PaymentCommand) throws -> [XMLElement] {
+	private func _generatePKPandBKP(forCommand command: PaymentCommand) throws -> [XUXMLElement] {
 		let localeData = self.localeSpecificData
 		
 		let plaintext = [
@@ -349,53 +443,67 @@ public final class XUEETCommunicator {
 			String(format: "%0.2f", command.paymentAmount.total.doubleValue)
 		].joined(separator: "|")
 		
-		var error: Unmanaged<CFError>?
-		guard let signer = SecSignTransformCreate(self.certificate.privateKey, &error) else {
-			if let err = error?.takeRetainedValue() {
-				throw SendingError.coreFoundationError(err)
-			} else {
-				throw SendingError.unknownError
-			}
-		}
+		let signedData: Data
 		
-		guard SecTransformSetAttribute(signer, kSecTransformInputAttributeName, plaintext.data(using: .ascii)! as CFData, &error) else {
-			if let err = error?.takeRetainedValue() {
-				throw SendingError.coreFoundationError(err)
-			} else {
-				throw SendingError.unknownError
+		#if os(iOS)
+			do {
+				let swiftyRsa = SwiftyRSA()
+				signedData = try swiftyRsa.signData(plaintext.data(using: .ascii)!, privateKey: self.certificate.privateKey, digestMethod: .SHA256)
+			} catch let error {
+				print(error)
+				throw error
 			}
-		}
-		
-		guard SecTransformSetAttribute(signer, kSecDigestTypeAttribute, kSecDigestSHA2, &error) else {
-			if let err = error?.takeRetainedValue() {
-				throw SendingError.coreFoundationError(err)
-			} else {
-				throw SendingError.unknownError
+		#else
+			var error: Unmanaged<CFError>?
+			guard let signer = SecSignTransformCreate(self.certificate.privateKey, &error) else {
+				if let err = error?.takeRetainedValue() {
+					throw SendingError.coreFoundationError(err)
+				} else {
+					throw SendingError.unknownError
+				}
 			}
-		}
-		
-		let digestLength: CFNumber = 256 as CFNumber
-		guard SecTransformSetAttribute(signer, kSecDigestLengthAttribute, digestLength, &error) else {
-			if let err = error?.takeRetainedValue() {
-				throw SendingError.coreFoundationError(err)
-			} else {
-				throw SendingError.unknownError
+			
+			guard SecTransformSetAttribute(signer, kSecTransformInputAttributeName, plaintext.data(using: .ascii)! as CFData, &error) else {
+				if let err = error?.takeRetainedValue() {
+					throw SendingError.coreFoundationError(err)
+				} else {
+					throw SendingError.unknownError
+				}
 			}
-		}
-
-		error = nil
-		
-		guard let signedData = SecTransformExecute(signer, &error) as? Data else {
-			if let err = error?.takeRetainedValue() {
-				throw SendingError.coreFoundationError(err)
-			} else {
-				throw SendingError.unknownError
+			
+			guard SecTransformSetAttribute(signer, kSecDigestTypeAttribute, kSecDigestSHA2, &error) else {
+				if let err = error?.takeRetainedValue() {
+					throw SendingError.coreFoundationError(err)
+				} else {
+					throw SendingError.unknownError
+				}
 			}
-		}
+			
+			let digestLength: CFNumber = 256 as CFNumber
+			guard SecTransformSetAttribute(signer, kSecDigestLengthAttribute, digestLength, &error) else {
+				if let err = error?.takeRetainedValue() {
+					throw SendingError.coreFoundationError(err)
+				} else {
+					throw SendingError.unknownError
+				}
+			}
+			
+			error = nil
+			
+			guard let data = SecTransformExecute(signer, &error) as? Data else {
+				if let err = error?.takeRetainedValue() {
+					throw SendingError.coreFoundationError(err)
+				} else {
+					throw SendingError.unknownError
+				}
+			}
+			
+			signedData = data
+		#endif
 		
 		
 		let signature = signedData.base64EncodedString()
-		let pkpElement = XMLElement(name: "pkp", stringValue: signature)
+		let pkpElement = XUXMLElement(name: "pkp", stringValue: signature)
 		pkpElement.setAttributesWith([
 			"digest": "SHA256",
 			"cipher": "RSA2048",
@@ -412,7 +520,7 @@ public final class XUEETCommunicator {
 			bkpParts.append(prefix)
 		}
 		
-		let bkpElement = XMLElement(name: "bkp", stringValue: bkpParts.joined(separator: "-"))
+		let bkpElement = XUXMLElement(name: "bkp", stringValue: bkpParts.joined(separator: "-"))
 		bkpElement.setAttributesWith([
 			"digest": "SHA1",
 			"encoding": "base16"
@@ -420,19 +528,19 @@ public final class XUEETCommunicator {
 		return [pkpElement, bkpElement]
 	}
 	
-	private func _generateSOAPHeader(from soapBody: XMLElement, withBodyUUID bodyUUID: String) throws -> XMLElement {
-		let headerElement = XMLElement(name: "SOAP-ENV:Header", attributes: [
+	private func _generateSOAPHeader(from soapBody: XUXMLElement, withBodyUUID bodyUUID: String) throws -> XUXMLElement {
+		let headerElement = XUXMLElement(name: "SOAP-ENV:Header", attributes: [
 				"xmlns:SOAP-ENV": "http://schemas.xmlsoap.org/soap/envelope/"
 			])
 		
-		let securityElement = XMLElement(name: "wsse:Security", attributes: [
+		let securityElement = XUXMLElement(name: "wsse:Security", attributes: [
 				"xmlns:wsse": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd",
 				"xmlns:wsu": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd",
 				"soap:mustUnderstand": "1"
 			])
 		
-		let binarySecurityTokenUUID = String.uuidString
-		let binarySecurityTokenElement = XMLElement(name: "wsse:BinarySecurityToken", attributes: [
+		let binarySecurityTokenUUID = UUID().uuidString
+		let binarySecurityTokenElement = XUXMLElement(name: "wsse:BinarySecurityToken", attributes: [
 				"EncodingType": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary",
 				"ValueType": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3",
 				"wsu:Id": "X509-\(binarySecurityTokenUUID)"
@@ -446,12 +554,12 @@ public final class XUEETCommunicator {
 		binarySecurityTokenElement.stringValue = certificateData.base64EncodedString()
 		securityElement.addChild(binarySecurityTokenElement)
 		
-		let signatureElement = XMLElement(name: "ds:Signature", attributes: [
+		let signatureElement = XUXMLElement(name: "ds:Signature", attributes: [
 				"xmlns:ds": "http://www.w3.org/2000/09/xmldsig#",
-				"Id": "SIG-\(String.uuidString)"
+				"Id": "SIG-\(UUID().uuidString)"
 			])
 		
-		let bodyCopy = soapBody.copy() as! XMLElement
+		let bodyCopy = soapBody.copy() as! XUXMLElement
 		bodyCopy.addAttribute(named: "xmlns:soap", withStringValue: "http://schemas.xmlsoap.org/soap/envelope/")
 		
 		let canonicalXMLString = bodyCopy.canonicalXMLString
@@ -464,7 +572,7 @@ public final class XUEETCommunicator {
 		let signedInfoElement = self._createSignedInfoElement(withDigest: (bodyData as NSData).sha256Digest().base64EncodedString(), andBodyUUID: bodyUUID)
 		signatureElement.addChild(signedInfoElement)
 		
-		let signedInfoCopy = signedInfoElement.copy() as! XMLElement
+		let signedInfoCopy = signedInfoElement.copy() as! XUXMLElement
 		signedInfoCopy.addAttribute(named: "xmlns:soap", withStringValue: "http://schemas.xmlsoap.org/soap/envelope/")
 		signedInfoCopy.addAttribute(named: "xmlns:ds", withStringValue: "http://www.w3.org/2000/09/xmldsig#")
 		
@@ -473,27 +581,25 @@ public final class XUEETCommunicator {
 		}
 		
 		let signatureValue = try self.certificate.signDataUsingRSASHA256(signatureInfoData)
-		signatureElement.addChild(XMLElement(name: "ds:SignatureValue", stringValue: signatureValue))
+		signatureElement.addChild(XUXMLElement(name: "ds:SignatureValue", stringValue: signatureValue))
 		
-		let keyInfoElement = XMLElement(name: "ds:KeyInfo", attributes: [
-				"Id": "KI-\(String.uuidString)"
+		let keyInfoElement = XUXMLElement(name: "ds:KeyInfo", attributes: [
+				"Id": "KI-\(UUID().uuidString)"
 			])
 		
-		let securityTokenReferenceElement = XMLElement(name: "wsse:SecurityTokenReference", attributes: [
+		let securityTokenReferenceElement = XUXMLElement(name: "wsse:SecurityTokenReference", attributes: [
 				"xmlns:wsse": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd",
 				"xmlns:wsu": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd",
-				"wsu:Id": "STR-\(String.uuidString)"
+				"wsu:Id": "STR-\(UUID().uuidString)"
 			])
-		securityTokenReferenceElement.addChild(XMLElement(name: "wsse:Reference", attributes: [
+		securityTokenReferenceElement.addChild(XUXMLElement(name: "wsse:Reference", attributes: [
 				"URI": "#X509-\(binarySecurityTokenUUID)",
 				"ValueType": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3"
 			]))
+		
 		keyInfoElement.addChild(securityTokenReferenceElement)
-		
 		signatureElement.addChild(keyInfoElement)
-		
 		securityElement.addChild(signatureElement)
-		
 		headerElement.addChild(securityElement)
 		return headerElement
 	}
@@ -518,23 +624,24 @@ public final class XUEETCommunicator {
 	/// will be executed with the testing flag.
 	///
 	/// Throws a SendingError.
-	public func sendPayment(_ payment: PaymentCommand, validatingOnly: Bool = false) throws -> PaymentResponse {
+	public func sendPayment(_ payment: PaymentCommand, validatingOnly: Bool = false, testMode: Bool = XUAppSetup.isRunningInDebugMode) throws -> PaymentResponse {
 		let header = self._createHeaderElement(withUUID: payment.commandUUID, validatingOnly: validatingOnly)
 		let data = try self._createDataElement(withCommand: payment)
 		let controlCodes = try self._createControlCodesElement(withCommand: payment)
-		let saleElement = XMLElement(name: "Trzba", attributes: [
+		let saleElement = XUXMLElement(name: "Trzba", attributes: [
 				"xmlns": "http://fs.mfcr.cz/eet/schema/v3"
 			])
+		
 		saleElement.addChild(header)
 		saleElement.addChild(data)
 		saleElement.addChild(controlCodes)
 		
-		let soapEnvelope = XMLElement(name: "soap:Envelope", attributes: [
+		let soapEnvelope = XUXMLElement(name: "soap:Envelope", attributes: [
 				"xmlns:soap": "http://schemas.xmlsoap.org/soap/envelope/"
 			])
 		
-		let soapBodyUUID = String.uuidString
-		let soapBody = XMLElement(name: "soap:Body", attributes: [
+		let soapBodyUUID = UUID().uuidString
+		let soapBody = XUXMLElement(name: "soap:Body", attributes: [
 				"xmlns:wsu": "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd",
 				"wsu:Id": "id-\(soapBodyUUID)"
 			])
@@ -546,12 +653,10 @@ public final class XUEETCommunicator {
 		soapEnvelope.addChild(soapHeader)
 		soapEnvelope.addChild(soapBody)
 		
-		let document = XMLDocument(rootElement: soapEnvelope)
-		document.characterEncoding = "UTF-8"
-		
 		let downloadCenter = XUDownloadCenter(owner: self)
 		let soapURLString: String
-		if XUAppSetup.isRunningInDebugMode {
+		
+		if testMode {
 			soapURLString = "https://pg.eet.cz/eet/services/EETServiceSOAP/v3"
 		} else {
 			soapURLString = "https://prod.eet.cz:443/eet/services/EETServiceSOAP/v3"
@@ -563,7 +668,7 @@ public final class XUEETCommunicator {
 			request.contentType = "text/xml; charset=UTF-8"
 			request.httpMethod = "POST"
 			
-			let xmlString = document.canonicalXMLStringPreservingComments(false)
+			let xmlString = soapEnvelope.canonicalXMLString
 			let xmlStringFixup = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n" + xmlString + "\n"
 			let xmlData = xmlStringFixup.data(using: .utf8)!
 			
@@ -604,7 +709,7 @@ public final class XUEETCommunicator {
 	}
 	
 	/// Validates the certificate. It is automatically called within init(account:)
-	/// but can be rechecked, e.g. if an instance of this helper is kept for 
+	/// but can be rechecked, e.g. if an instance of this helper is kept for
 	/// a longer period of time. Always throws InitializationError.
 	public func validateCertificate() throws {
 		for certificate in self.certificate.certificateChain {
@@ -637,4 +742,3 @@ extension XUEETCommunicator: XUDownloadCenterOwner {
 	}
 	
 }
-
